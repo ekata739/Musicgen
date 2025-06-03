@@ -1,0 +1,19 @@
+{
+  "key": "A",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Light instrumental background music",
+  "keywords": "light, instrumental, background, easy, simple",
+  "duration": 228.264,
+  "bpm": "100",
+  "genre": "instrumental",
+  "title": "Light Instrumental Melody",
+  "name": "light-instrumental-melody-313329",
+  "instrument": "Guitar",
+  "moods": [
+    "light",
+    "carefree",
+    "simple"
+  ]
+}

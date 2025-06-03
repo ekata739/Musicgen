@@ -1,0 +1,19 @@
+{
+  "key": "A minor",
+  "artist": "Amanda Welch",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Melancholic solo piano piece with neo-classical influences",
+  "keywords": "piano, solo, melancholic, lullaby, neo-classical",
+  "duration": 116.219,
+  "bpm": "70",
+  "genre": "classical",
+  "title": "Melody",
+  "name": "watermarked_Amanda_Welch_Melody_instrumental_1_56",
+  "instrument": "Piano",
+  "moods": [
+    "sad",
+    "reflective",
+    "calm"
+  ]
+}

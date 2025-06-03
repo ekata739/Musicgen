@@ -1,0 +1,19 @@
+{
+  "key": "Ab",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Emotional romantic piano composition",
+  "keywords": "romantic, piano, emotional, sentimental, love",
+  "duration": 230.136,
+  "bpm": "65",
+  "genre": "classical",
+  "title": "Romantic Piano Song 2",
+  "name": "romantic-piano-song-2-309083",
+  "instrument": "Piano",
+  "moods": [
+    "romantic",
+    "emotional",
+    "sentimental"
+  ]
+}

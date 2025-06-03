@@ -1,0 +1,19 @@
+{
+  "key": "D",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Romantic pop instrumental with modern feel",
+  "keywords": "romantic, pop, modern, love, sentimental",
+  "duration": 131.064,
+  "bpm": "95",
+  "genre": "pop",
+  "title": "Romantic Pop 1",
+  "name": "romantic-pop-1-297157",
+  "instrument": "Mix",
+  "moods": [
+    "romantic",
+    "modern",
+    "sentimental"
+  ]
+}

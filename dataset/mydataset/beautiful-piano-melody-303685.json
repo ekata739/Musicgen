@@ -1,0 +1,19 @@
+{
+  "key": "F",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Peaceful and flowing piano composition",
+  "keywords": "beautiful, soft, calm, modern classical",
+  "duration": 173.16,
+  "bpm": "60",
+  "genre": "modern classical",
+  "title": "Beautiful Piano Melody",
+  "name": "beautiful-piano-melody-303685",
+  "instrument": "Piano",
+  "moods": [
+    "peaceful",
+    "soft",
+    "melodic"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "key": "F",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Romantic instrumental piece for special moments",
+  "keywords": "romantic, love, sentimental, special, moments",
+  "duration": 116.04,
+  "bpm": "75",
+  "genre": "instrumental",
+  "title": "Romantic",
+  "name": "romantic-242811",
+  "instrument": "Strings",
+  "moods": [
+    "romantic",
+    "sentimental",
+    "emotional"
+  ]
+}

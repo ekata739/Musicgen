@@ -1,0 +1,19 @@
+{
+  "key": "A",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Ambient piano piece evoking celestial beauty and peaceful introspection",
+  "keywords": "piano, ambient, relaxing, celestial, soft",
+  "duration": 167.664,
+  "bpm": "60",
+  "genre": "ambient",
+  "title": "Meteorite - Clavier",
+  "name": "meteorite-clavier-beautiful-relaxing-piano-304569",
+  "instrument": "Piano",
+  "moods": [
+    "relaxing",
+    "ambient",
+    "beautiful"
+  ]
+}

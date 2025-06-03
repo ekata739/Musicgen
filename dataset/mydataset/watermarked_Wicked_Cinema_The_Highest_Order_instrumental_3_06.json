@@ -1,0 +1,19 @@
+{
+  "key": "Em",
+  "artist": "Wicked Cinema",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Dramatic string orchestra piece with intense energy",
+  "keywords": "strings, dramatic, intense, classical, ensemble",
+  "duration": 186.096,
+  "bpm": "166",
+  "genre": "classical",
+  "title": "The Highest Order",
+  "name": "watermarked_Wicked_Cinema_The_Highest_Order_instrumental_3_06",
+  "instrument": "Strings",
+  "moods": [
+    "dramatic",
+    "suspenseful",
+    "epic"
+  ]
+}

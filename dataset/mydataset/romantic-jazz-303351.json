@@ -1,0 +1,19 @@
+{
+  "key": "Bb",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Smooth romantic jazz with warm tones",
+  "keywords": "romantic, jazz, smooth, warm, late night",
+  "duration": 141.793,
+  "bpm": "85",
+  "genre": "jazz",
+  "title": "Romantic Jazz",
+  "name": "romantic-jazz-303351",
+  "instrument": "Saxophone",
+  "moods": [
+    "romantic",
+    "smooth",
+    "warm"
+  ]
+}

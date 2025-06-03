@@ -1,0 +1,19 @@
+{
+  "key": "G",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Upbeat classical strings arrangement",
+  "keywords": "upbeat, classical, strings, joyful, happy",
+  "duration": 132.519,
+  "bpm": "115",
+  "genre": "classical",
+  "title": "Strings of Joy",
+  "name": "upbeat-classical-strings-of-joy-306944",
+  "instrument": "Strings",
+  "moods": [
+    "joyful",
+    "happy",
+    "upbeat"
+  ]
+}

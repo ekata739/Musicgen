@@ -1,0 +1,19 @@
+{
+  "key": "G",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Inspiring classical piano piece symbolizing freedom and clarity",
+  "keywords": "freedom, classical, piano, inspiring, uplifting",
+  "duration": 98.304,
+  "bpm": "100",
+  "genre": "classical",
+  "title": "Freedom Classical Piano",
+  "name": "freedom-classical-piano-255107",
+  "instrument": "Piano",
+  "moods": [
+    "free",
+    "inspiring",
+    "calm"
+  ]
+}

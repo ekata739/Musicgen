@@ -1,0 +1,19 @@
+{
+  "key": "Eb",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Smooth romantic saxophone melody",
+  "keywords": "romantic, saxophone, smooth, jazz, late night",
+  "duration": 324.023,
+  "bpm": "70",
+  "genre": "jazz",
+  "title": "Romantic Saxophone",
+  "name": "romantic-saxophone-244539",
+  "instrument": "Saxophone",
+  "moods": [
+    "romantic",
+    "smooth",
+    "sensual"
+  ]
+}

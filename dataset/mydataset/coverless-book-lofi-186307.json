@@ -1,0 +1,19 @@
+{
+  "key": "F",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Chill lofi beats perfect for studying or relaxing",
+  "keywords": "lofi, chillhop, study, beats, relaxing",
+  "duration": 264.046,
+  "bpm": "85",
+  "genre": "lofi",
+  "title": "Coverless Book",
+  "name": "coverless-book-lofi-186307",
+  "instrument": "Mix",
+  "moods": [
+    "chill",
+    "relaxed",
+    "studious"
+  ]
+}

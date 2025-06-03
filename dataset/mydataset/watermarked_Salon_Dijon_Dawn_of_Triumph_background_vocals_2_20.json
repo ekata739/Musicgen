@@ -1,0 +1,19 @@
+{
+  "key": "C",
+  "artist": "Salon Dijon",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Heroic orchestral piece with triumphant climax",
+  "keywords": "orchestral, heroic, trailer, epic, victory",
+  "duration": 140.669,
+  "bpm": "140",
+  "genre": "cinematic",
+  "title": "Dawn of Triumph",
+  "name": "watermarked_Salon_Dijon_Dawn_of_Triumph_background_vocals_2_20",
+  "instrument": "Orchestra",
+  "moods": [
+    "inspiring",
+    "hopeful",
+    "triumphant"
+  ]
+}

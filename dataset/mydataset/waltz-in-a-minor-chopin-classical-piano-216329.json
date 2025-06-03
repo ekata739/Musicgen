@@ -1,0 +1,19 @@
+{
+  "key": "A minor",
+  "artist": "Chopin",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Classic piano waltz by Chopin in A minor",
+  "keywords": "waltz, classical, Chopin, elegant, piano",
+  "duration": 154.128,
+  "bpm": "60",
+  "genre": "classical",
+  "title": "Waltz in A Minor",
+  "name": "waltz-in-a-minor-chopin-classical-piano-216329",
+  "instrument": "Piano",
+  "moods": [
+    "elegant",
+    "graceful",
+    "classical"
+  ]
+}

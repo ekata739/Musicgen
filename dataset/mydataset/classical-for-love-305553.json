@@ -1,0 +1,19 @@
+{
+  "key": "G",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Romantic classical composition for emotional moments",
+  "keywords": "romantic, strings, love, sentimental, wedding",
+  "duration": 142.916,
+  "bpm": "70",
+  "genre": "classical",
+  "title": "Classical for Love",
+  "name": "classical-for-love-305553",
+  "instrument": "Strings",
+  "moods": [
+    "romantic",
+    "emotional",
+    "dreamy"
+  ]
+}

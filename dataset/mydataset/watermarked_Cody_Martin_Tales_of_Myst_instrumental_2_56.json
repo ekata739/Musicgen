@@ -1,0 +1,19 @@
+{
+  "key": "Dm",
+  "artist": "Cody Martin",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Cinematic hybrid orchestral track with mysterious atmosphere",
+  "keywords": "orchestral, cinematic, mystery, hybrid, soundtrack",
+  "duration": 176.953,
+  "bpm": "90",
+  "genre": "cinematic",
+  "title": "Tales of Myst",
+  "name": "watermarked_Cody_Martin_Tales_of_Myst_instrumental_2_56",
+  "instrument": "Strings",
+  "moods": [
+    "mysterious",
+    "suspenseful",
+    "epic"
+  ]
+}

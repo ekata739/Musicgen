@@ -1,0 +1,19 @@
+{
+  "key": "Bbm",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Short inspirational classical piece",
+  "keywords": "inspirational, short, classical, symphony, highlight",
+  "duration": 60.029,
+  "bpm": "110",
+  "genre": "classical",
+  "title": "Inspirational Symphony",
+  "name": "inspirational-symphony-60-sec-classical-music-244919",
+  "instrument": "Orchestra",
+  "moods": [
+    "inspiring",
+    "dramatic",
+    "epic"
+  ]
+}

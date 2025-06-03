@@ -1,0 +1,19 @@
+{
+  "key": "A minor",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Deeply emotional sad piano sonata",
+  "keywords": "sad, piano, emotional, modern classical",
+  "duration": 155.977,
+  "bpm": "58",
+  "genre": "modern classical",
+  "title": "Broken Sonata",
+  "name": "broken-sonata-sad-piano-201839",
+  "instrument": "Piano",
+  "moods": [
+    "sad",
+    "emotional",
+    "deep"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "key": "D",
+  "artist": "Unknown",
+  "sample_rate": 44100,
+  "file_extension": "mp3",
+  "description": "Light flute melody with airy atmosphere",
+  "keywords": "flute, light, airy, nature, peaceful",
+  "duration": 65.541,
+  "bpm": "90",
+  "genre": "instrumental",
+  "title": "Flute Melody",
+  "name": "flute-melody-315241",
+  "instrument": "Flute",
+  "moods": [
+    "light",
+    "playful",
+    "peaceful"
+  ]
+}

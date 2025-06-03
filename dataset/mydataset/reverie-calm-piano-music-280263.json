@@ -1,0 +1,19 @@
+{
+  "key": "C",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Dreamy and relaxing piano reverie",
+  "keywords": "reverie, calm, relaxing, soft, piano",
+  "duration": 113.88,
+  "bpm": "65",
+  "genre": "modern classical",
+  "title": "Reverie - Calm Piano Music",
+  "name": "reverie-calm-piano-music-280263",
+  "instrument": "Piano",
+  "moods": [
+    "dreamy",
+    "calm",
+    "relaxing"
+  ]
+}

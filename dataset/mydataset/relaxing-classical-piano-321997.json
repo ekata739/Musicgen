@@ -1,0 +1,19 @@
+{
+  "key": "D",
+  "artist": "Unknown",
+  "sample_rate": 48000,
+  "file_extension": "mp3",
+  "description": "Soothing piano for stress relief and focus",
+  "keywords": "relaxing, classical, piano, soothing, background",
+  "duration": 161.592,
+  "bpm": "60",
+  "genre": "modern classical",
+  "title": "Relaxing Classical Piano",
+  "name": "relaxing-classical-piano-321997",
+  "instrument": "Piano",
+  "moods": [
+    "relaxing",
+    "soothing",
+    "peaceful"
+  ]
+}
