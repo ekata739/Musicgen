@@ -1,17 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-"""
-Transformer model, with streaming support, xformer attention support
-and easy causal attention with a potentially finite receptive field.
-
-See `StreamingTransformer` for more information.
-
-Unlike regular PyTorch Transformer, we make the hard choice that batches are first.
-"""
 
 import typing as tp
 
@@ -27,71 +13,42 @@ from .streaming import StreamingModule
 
 _efficient_attention_backend: str = 'torch'
 
-
 def set_efficient_attention_backend(backend: str = 'torch'):
-    # Using torch by default, it seems a bit faster on older P100 GPUs (~20% faster).
     global _efficient_attention_backend
-    assert _efficient_attention_backend in ['xformers', 'torch']
+    assert backend in ['xformers', 'torch']
     _efficient_attention_backend = backend
-
 
 def _get_attention_time_dimension(memory_efficient: bool) -> int:
     if _efficient_attention_backend == 'torch' and memory_efficient:
         return 2
     else:
-        return 1
-
+        return 1 #Returns the time axis index depending on the backend layout.
 
 def _is_profiled() -> bool:
-    # Return true if we are currently running with a xformers profiler activated.
     try:
         from xformers.profiler import profiler
-    except ImportError:
+    except ImportError: #returns whether xformers profiler is actively running
         return False
     return profiler._Profiler._CURRENT_PROFILER is not None
 
-
 def create_norm_fn(norm_type: str, dim: int, **kwargs) -> nn.Module:
-    """Create normalization module for transformer encoder layer.
-
-    Args:
-        norm_type (str): Normalization method.
-        dim (int): Dimension of the normalized layer.
-        **kwargs (dict): Additional parameters for normalization layer.
-    Returns:
-        nn.Module: Normalization module.
-    """
-    if norm_type == 'layer_norm':
+    if norm_type == 'layer_norm':#Returns the specified normalization module
         return nn.LayerNorm(dim, eps=1e-5, **kwargs)
     else:
         raise ValueError(f"Unknown norm type: {norm_type}")
 
-
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
                          dtype: torch.dtype = torch.float32) -> torch.Tensor:
-    """Create sinusoidal positional embedding, with shape `[B, T, C]`.
-
-    Args:
-        positions (torch.Tensor): LongTensor of positions.
-        dim (int): Dimension of the embedding.
-        max_period (float): Maximum period of the cosine/sine functions.
-        dtype (torch.dtype or str): dtype to use to generate the embedding.
-    Returns:
-        torch.Tensor: Sinusoidal positional embedding.
-    """
-    # We aim for BTC format
-    assert dim % 2 == 0
+    assert dim % 2 == 0 #Creates sinusoidal positional embeddings (like those used in the original Transformer). Each position is mapped to a unique sine/cosine value.
     half_dim = dim // 2
     positions = positions.to(dtype)
     adim = torch.arange(half_dim, device=positions.device, dtype=dtype).view(1, 1, -1)
-    max_period_tensor = torch.full([], max_period, device=positions.device, dtype=dtype)  # avoid sync point
+    max_period_tensor = torch.full([], max_period, device=positions.device, dtype=dtype)
     phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
-
 def expand_repeated_kv(x: torch.Tensor, n_rep: int, memory_efficient: bool) -> torch.Tensor:
-    """torch.repeat_interleave(x, dim=2, repeats=n_rep) from xlformers."""
-    if n_rep == 1:
+    if n_rep == 1: #Handles key-value duplication for multi-query attention where kv_repeat > 1.
         return x
     if _efficient_attention_backend == 'torch' and memory_efficient:
         bs, n_kv_heads, slen, head_dim = x.shape
@@ -108,25 +65,13 @@ def expand_repeated_kv(x: torch.Tensor, n_rep: int, memory_efficient: bool) -> t
             .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
         )
 
-
 class LayerScale(nn.Module):
-    """Layer scale from [Touvron et al 2021] (https://arxiv.org/pdf/2103.17239.pdf).
-    This rescales diagonally the residual outputs close to 0, with a learnt scale.
-
-    Args:
-        channels (int): Number of channels.
-        init (float): Initial scale.
-        channel_last (bool): If True, expect `[*, C]` shaped tensors, otherwise, `[*, C, T]`.
-        device (torch.device or str, optional): Device on which to initialize the module.
-        dtype (torch.dtype, optional): dtype to use to initialize the module.
-    """
     def __init__(self, channels: int, init: float = 1e-4, channel_last: bool = True,
                  device=None, dtype=None):
-        super().__init__()
+        super().__init__() #Applies a learned scaling factor to the residual connection. Helps stabilize training in deep networks.
         self.channel_last = channel_last
         self.scale = nn.Parameter(
-            torch.full((channels,), init,
-                       requires_grad=True, device=device, dtype=dtype))
+            torch.full((channels,), init, requires_grad=True, device=device, dtype=dtype))
 
     def forward(self, x: torch.Tensor):
         if self.channel_last:
@@ -134,39 +79,70 @@ class LayerScale(nn.Module):
         else:
             return self.scale[:, None] * x
 
+class RelativePositionalEncoding(nn.Module):
+    def __init__(self, embed_dim: int, max_len: int = 512):
+        super().__init__() #Instead of fixed sin/cos positions, this learns an embedding for relative positions between tokens. Helpful in music or time-series tasks where relative position matters more than absolute.
+        self.embed_dim = embed_dim
+        self.max_len = max_len
+        self.rel_pos_emb = nn.Embedding(2 * max_len - 1, embed_dim) #t maps relative distances between tokens to embedding vectors.
+        coords = torch.arange(max_len)
+        rel_coords = coords[:, None] - coords[None, :] #This creates a matrix of relative distances between every pair of positions.
+        rel_coords += max_len - 1 #Since relative distances can be negative, we shift them to become valid positive indices into
+        self.register_buffer('rel_coords', rel_coords)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape #Applies the relative position bias to every token in the sequence.
+        rel_pos = self.rel_pos_emb(self.rel_coords[:seq_len, :seq_len])
+        x = x + rel_pos.unsqueeze(0) #adds batch dimension for broadcasting.
+        return x
+
+class MultiScaleHeterogeneousAdapter(nn.Module):
+    """Multi-Scale Temporal Adapter with Single Scale, no tasks."""
+    def __init__(self, embed_dim: int, num_heads: int, scale: int,
+                 device=None, dtype=None):
+        super().__init__()
+        self.scale = scale #How long the learned "prompt" should be—controls temporal range.
+        self.head_dim = embed_dim // num_heads #Dimension per attention head.
+
+        # Initialize prompt with sinusoidal pattern for classical melodies
+        self.prompt = nn.Parameter(
+            torch.sin(torch.linspace(0, 2 * torch.pi, scale)).unsqueeze(-1).repeat(1, self.head_dim) * 0.1
+        ) #Creates a [scale, head_dim] matrix of sinusoidal signals (like musical waveforms). Sinusoidal patterns can capture natural periodic structure
+
+
+        # These act as learned memory templates, initialized from a sinusoidal base.
+        self.gate = nn.Parameter(
+            torch.ones(1, device=device, dtype=dtype) * 0.5,
+            requires_grad=True
+        ) #A scalar gate (sigmoid(self.gate)) controls how much of the adapter's output influences the final result.
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        batch_size, seq_len, num_heads, head_dim = q.shape #Input: Q/K/V from main attention head.
+        adapter_output = torch.zeros_like(q) #Output: same shape as q.
+
+
+        scale_prompt = self.prompt #Match the length of the prompt to current sequence length.
+        if scale_prompt.size(0) > seq_len:
+            scale_prompt = scale_prompt[:seq_len]
+        elif scale_prompt.size(0) < seq_len:
+            scale_prompt = F.pad(scale_prompt, (0, 0, 0, seq_len - scale_prompt.size(0)))
+        scale_prompt_expanded = scale_prompt.unsqueeze(0).unsqueeze(2).expand(batch_size, -1, num_heads, -1) #Reshape prompt to shape: (batch, seq_len, num_heads, head_dim) so it can be attended to.
+        attn = F.scaled_dot_product_attention(
+            q, scale_prompt_expanded, scale_prompt_expanded, dropout_p=0.0
+        ) #Perform attention over the prompt, not the original key/value inputs.
+#This returns context from the fixed sinusoidal memory.
+        gate = torch.sigmoid(self.gate)
+        adapter_output += gate * attn
+
+        return adapter_output #Modulate output via gate, so the model can learn how much to use this adapter.
 
 class StreamingMultiheadAttention(StreamingModule):
-    """Similar to `nn.MultiheadAttention` but with support for streaming, causal evaluation.
-
-    Args:
-        embed_dim (int): Dimension to project to.
-        num_heads (int): Number of heads.
-        dropout (float): Dropout level.
-        bias (bool): Use bias in projections.
-        causal (bool): Causal mask applied automatically.
-        past_context (int, optional): Receptive field for the causal mask, infinite if None.
-        custom (bool): Use custom MHA implementation, for testing / benchmarking.
-        memory_efficient (bool): Use xformers based memory efficient attention.
-        attention_as_float32 (bool): Perform the attention as float32
-            (especially important with memory_efficient as autocast won't do this automatically).
-        rope (`RotaryEmbedding`, optional): Rope embedding to use.
-        cross_attention: Should be true when used as a cross attention.
-            All keys and values must be available at once, streaming is only for the queries.
-            Cannot be used with `causal` or `rope` (as it wouldn't make sens to
-            interpret the time steps in the keys relative to those in the queries).
-        safe_streaming (bool): Bug fix, will go away with xformers update.
-        qk_layer_norm (bool): Layer normalization applied to queries and keys before dot product.
-        kv_repeat (int): If > 1, will repeat keys and queries multiple times (need to divide num_heads).
-            This will lead to faster decoding time on A100 or other GPUs with tensorcore.
-        device (torch.device, optional): Device on which to initialize.
-        dtype (torch.dtype, optional): dtype to use.
-    """
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, bias: bool = True,
                  causal: bool = False, past_context: tp.Optional[int] = None, custom: bool = False,
                  memory_efficient: bool = False, attention_as_float32: bool = False,
                  rope: tp.Optional[RotaryEmbedding] = None, cross_attention: bool = False,
                  safe_streaming: bool = True, qk_layer_norm: bool = False, kv_repeat: int = 1,
-                 device=None, dtype=None):
+                 use_adapter: bool = True, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
         if past_context is not None:
@@ -184,8 +160,8 @@ class StreamingMultiheadAttention(StreamingModule):
         self.dropout = dropout
         self.kv_repeat = kv_repeat
         if cross_attention:
-            assert not causal, "Causal cannot work with cross attention."
-            assert rope is None, "Rope cannot work with cross attention."
+            assert not causal
+            assert rope is None
 
         if memory_efficient:
             _verify_xformers_memory_efficient_compat()
@@ -199,11 +175,10 @@ class StreamingMultiheadAttention(StreamingModule):
             kv_dim = (embed_dim // num_heads) * num_kv
             out_dim += 2 * kv_dim
             in_proj = nn.Linear(embed_dim, out_dim, bias=bias, **factory_kwargs)
-            # We try to follow the default PyTorch MHA convention, to easily compare results.
             self.in_proj_weight = in_proj.weight
             self.in_proj_bias = in_proj.bias
             if bias:
-                self.in_proj_bias.data.zero_()  # Following Pytorch convention
+                self.in_proj_bias.data.zero_()
             self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
             if bias:
                 self.out_proj.bias.data.zero_()
@@ -221,9 +196,57 @@ class StreamingMultiheadAttention(StreamingModule):
             self.q_layer_norm = nn.LayerNorm(ln_dim)
             self.k_layer_norm = nn.LayerNorm(ln_dim)
 
+        self.use_adapter = use_adapter
+        self.adapters = nn.ModuleList()
+        if self.use_adapter:
+            # Adapter 1: Micro-patterns (short scale)
+            self.adapters.append(MultiScaleHeterogeneousAdapter(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                scale=150,
+                device=device,
+                dtype=dtype
+            ))
+            # Adapter 2: Melody (short-medium scale)
+            self.adapters.append(MultiScaleHeterogeneousAdapter(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                scale=400,
+                device=device,
+                dtype=dtype
+            ))
+            # Adapter 3: Harmony (medium scale)
+            self.adapters.append(MultiScaleHeterogeneousAdapter(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                scale=600,
+                device=device,
+                dtype=dtype
+            ))
+            # Adapter 4: Sectional structure (long scale)
+            self.adapters.append(MultiScaleHeterogeneousAdapter(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                scale=1000,
+                device=device,
+                dtype=dtype
+            ))
+            # Adapter 5: Full structure (longest scale)
+            self.adapters.append(MultiScaleHeterogeneousAdapter(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                scale=1500,
+                device=device,
+                dtype=dtype
+            ))
+            # Weights for combining adapter outputs, prioritizing melody
+            self.adapter_weights = nn.Parameter(
+                torch.tensor([0.20, 0.20, 0.20, 0.20, 0.20], device=device, dtype=dtype),
+                requires_grad=True
+            )
+
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         if not self.custom:
-            # Support compat with regular MHA
             keys = [n for n, _ in self.mha.named_parameters()]
             for key in keys:
                 if prefix + key in state_dict:
@@ -231,28 +254,21 @@ class StreamingMultiheadAttention(StreamingModule):
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _get_mask(self, current_steps: int, device: torch.device, dtype: torch.dtype):
-        # Return a causal mask, accounting for potentially stored past keys/values
-        # We actually return a bias for the attention score, as this has the same
-        # convention both in the builtin MHA in Pytorch, and Xformers functions.
         time_dim = _get_attention_time_dimension(self.memory_efficient)
         if self.memory_efficient:
             from xformers.ops import LowerTriangularMask
             if current_steps == 1:
-                # If we only have one step, then we do not need a mask.
                 return None
             elif 'past_keys' in self._streaming_state:
                 raise RuntimeError("Not supported at the moment")
             else:
-                # Then we can safely use a lower triangular mask
                 return LowerTriangularMask()
         if self._streaming_state:
-            past_keys = self._streaming_state['past_keys']
-            past_steps = past_keys.shape[time_dim]
+            past_steps = self._streaming_state['past_keys'].shape[time_dim]
         else:
             past_steps = 0
 
-        queries_pos = torch.arange(
-            past_steps, current_steps + past_steps, device=device).view(-1, 1)
+        queries_pos = torch.arange(past_steps, current_steps + past_steps, device=device).view(-1, 1)
         keys_pos = torch.arange(past_steps + current_steps, device=device).view(1, -1)
         delta = queries_pos - keys_pos
         valid = delta >= 0
@@ -266,11 +282,7 @@ class StreamingMultiheadAttention(StreamingModule):
     def _complete_kv(self, k, v):
         time_dim = _get_attention_time_dimension(self.memory_efficient)
         if self.cross_attention:
-            # With cross attention we assume all keys and values
-            # are already available, and streaming is with respect
-            # to the queries only.
             return k, v
-        # Complete the key/value pair using the streaming state.
         if self._streaming_state:
             pk = self._streaming_state['past_keys']
             nk = torch.cat([pk, k], dim=time_dim)
@@ -299,7 +311,6 @@ class StreamingMultiheadAttention(StreamingModule):
 
     def _apply_rope(self, query: torch.Tensor, key: torch.Tensor):
         time_dim = _get_attention_time_dimension(self.memory_efficient)
-        # Apply rope embeddings to query and key tensors.
         assert self.rope is not None
         if 'past_keys' in self._streaming_state:
             past_keys_offset = self._streaming_state['past_keys'].shape[1]
@@ -314,78 +325,59 @@ class StreamingMultiheadAttention(StreamingModule):
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 key_padding_mask=None, need_weights=False, attn_mask=None,
-                average_attn_weights=True, is_causal=False):
-        assert not is_causal, ("New param added in torch 2.0.1 not supported, "
-                               "use the causal args in the constructor.")
-
+                average_attn_weights=True, is_causal=False, prompt_desc: tp.Optional[str] = None):
+        assert not is_causal
         time_dim = _get_attention_time_dimension(self.memory_efficient)
-        if time_dim == 2:
-            layout = "b h t d"
-        else:
-            layout = "b t h d"
+        layout = "b h t d" if time_dim == 2 else "b t h d"
         dtype = query.dtype
         if self._is_streaming:
-            assert self.causal or self.cross_attention, \
-                "Streaming only available for causal or cross attention"
+            assert self.causal or self.cross_attention
 
         custom_attn_mask = attn_mask is not None
 
         if self.causal:
             assert attn_mask is None
-            # At the moment we specialize only for the self-attention case.
-            assert query.shape[1] == key.shape[1], "Causal only for same length query / key / value"
-            assert value.shape[1] == key.shape[1], "Causal only for same length query / key / value"
+            assert query.shape[1] == key.shape[1]
+            assert value.shape[1] == key.shape[1]
             attn_mask = self._get_mask(query.shape[1], query.device, query.dtype)
 
         if self.custom:
-            # custom implementation
             assert need_weights is False
             assert key_padding_mask is None
             if self.cross_attention:
-                # Different queries, keys, values, we have to spit manually the weights
-                # before applying the linear.
                 dim = self.in_proj_weight.shape[0] // 3
-                if self.in_proj_bias is None:
-                    bias_q, bias_k, bias_v = None, None, None
-                else:
-                    bias_q = self.in_proj_bias[:dim]
-                    bias_k = self.in_proj_bias[dim: 2 * dim]
-                    bias_v = self.in_proj_bias[2 * dim:]
+                bias_q = self.in_proj_bias[:dim] if self.in_proj_bias is not None else None
+                bias_k = self.in_proj_bias[dim: 2 * dim] if self.in_proj_bias is not None else None
+                bias_v = self.in_proj_bias[2 * dim:] if self.in_proj_bias is not None else None
                 q = nn.functional.linear(query, self.in_proj_weight[:dim], bias_q)
-                # todo: when streaming, we could actually save k, v and check the shape actually match.
                 k = nn.functional.linear(key, self.in_proj_weight[dim: 2 * dim], bias_k)
                 v = nn.functional.linear(value, self.in_proj_weight[2 * dim:], bias_v)
-                if self.qk_layer_norm is True:
+                if self.qk_layer_norm:
                     q = self.q_layer_norm(q)
                     k = self.k_layer_norm(k)
                 q, k, v = [rearrange(x, f"b t (h d) -> {layout}", h=self.num_heads) for x in [q, k, v]]
             else:
-                if not _is_profiled():
-                    # profiling breaks that propertysomehow.
-                    assert query is key, "specialized implementation"
-                    assert value is key, "specialized implementation"
+                assert query is key
+                assert value is key
                 projected = nn.functional.linear(query, self.in_proj_weight, self.in_proj_bias)
                 if self.kv_repeat == 1:
-                    if time_dim == 2:
-                        bound_layout = "b h p t d"
-                    else:
-                        bound_layout = "b t p h d"
+                    bound_layout = "b h p t d" if time_dim == 2 else "b t p h d"
                     packed = rearrange(projected, f"b t (p h d) -> {bound_layout}", p=3, h=self.num_heads)
                     q, k, v = ops.unbind(packed, dim=2)
                 else:
                     embed_dim = self.embed_dim
                     per_head_dim = (embed_dim // self.num_heads)
-                    kv_heads = self.num_heads // self.kv_repeat
+                    kv_heads = self.num_heads // kv_repeat
                     q = projected[:, :, :embed_dim]
                     start = embed_dim
                     end = start + per_head_dim * kv_heads
-                    k = projected[:, :, start: end]
+                    k = projected[:, :, start:end]
                     v = projected[:, :, end:]
                     q = rearrange(q, f"b t (h d) -> {layout}", h=self.num_heads)
                     k = rearrange(k, f"b t (h d) -> {layout}", h=kv_heads)
                     v = rearrange(v, f"b t (h d) -> {layout}", h=kv_heads)
 
-                if self.qk_layer_norm is True:
+                if self.qk_layer_norm:
                     assert self.kv_repeat == 1
                     q, k = [rearrange(x, f"{layout} -> b t (h d)") for x in [q, k]]
                     q = self.q_layer_norm(q)
@@ -397,12 +389,11 @@ class StreamingMultiheadAttention(StreamingModule):
                 if self.kv_repeat > 1:
                     k = expand_repeated_kv(k, self.kv_repeat, self.memory_efficient)
                     v = expand_repeated_kv(v, self.kv_repeat, self.memory_efficient)
+
             if self.attention_as_float32:
                 q, k, v = [x.float() for x in [q, k, v]]
             if self.memory_efficient:
                 if custom_attn_mask:
-                    # When using a custom attn mask:
-                    # Move to query's device, repeat for each sample, remove align8 padding
                     seq_len = query.shape[1]
                     attn_mask = attn_mask.to(q.dtype)
                     attn_mask = attn_mask.repeat((q.shape[0], 1, 1, 1))
@@ -415,13 +406,6 @@ class StreamingMultiheadAttention(StreamingModule):
                 else:
                     x = ops.memory_efficient_attention(q, k, v, attn_mask, p=p)
             else:
-                # We include the dot product as float32, for consistency
-                # with the other implementations that include that step
-                # as part of the attention. Note that when using `autocast`,
-                # the einsums would be done as bfloat16, but the softmax
-                # would be done as bfloat16, so `attention_as_float32` will
-                # extend a bit the range of operations done in float32,
-                # although this should make no difference.
                 q = q / q.shape[-1] ** 0.5
                 key_layout = layout.replace('t', 'k')
                 query_layout = layout
@@ -434,8 +418,14 @@ class StreamingMultiheadAttention(StreamingModule):
                     pre_w = pre_w + attn_mask
                 w = torch.softmax(pre_w, dim=-1)
                 w = F.dropout(w, self.dropout, training=self.training).to(v)
-                # Key and value have the same format.
                 x = torch.einsum(f"b h t k, {key_layout} -> {layout}", w, v)
+
+            if self.use_adapter and self.adapters:
+                adapter_outputs = [adapter(q, k, v) for adapter in self.adapters]
+                weights = F.softmax(self.adapter_weights, dim=0)
+                adapter_output = sum(w * out for w, out in zip(weights, adapter_outputs))
+                x = x + adapter_output
+
             x = x.to(dtype)
             x = rearrange(x, f"{layout} -> b t (h d)", h=self.num_heads)
             x = self.out_proj(x)
@@ -450,41 +440,7 @@ class StreamingMultiheadAttention(StreamingModule):
 
         return x, None
 
-
 class StreamingTransformerLayer(nn.TransformerEncoderLayer):
-    """TransformerLayer with Streaming / Causal support.
-    This also integrates cross_attention, when passing `cross_attention=True`,
-    rather than having two separate classes like in PyTorch.
-
-    Args:
-        d_model (int): Dimension of the data.
-        num_heads (int): Number of heads.
-        dim_feedforward (int): Intermediate dimension of FF module.
-        dropout (float): Dropout both for MHA and FF.
-        bias_ff (bool): Use bias for FF.
-        bias_attn (bool): Use bias for MHA.
-        causal (bool): Causal mask applied automatically.
-        past_context (int, optional): Receptive field for the causal mask, infinite if None.
-        custom (bool): Use custom MHA implementation, for testing / benchmarking.
-        memory_efficient (bool): Use xformers based memory efficient attention.
-        attention_as_float32 (bool): Perform the attention as float32
-            (especially important with memory_efficient as autocast won't do this automatically).
-        qk_layer_norm (bool): Layer normalization applied to queries and keys before dot product in attention.
-        qk_layer_norm_cross (bool): Same for the cross attention.
-        cross_attention (bool): If True, expect to get secondary input for cross-attention.
-            Cross attention will use the default MHA, as it typically won't require
-            special treatment.
-        layer_scale (float, optional): If not None, LayerScale will be used with
-            the given value as initial scale.
-        rope (`RotaryEmbedding`, optional): Rope embedding to use.
-        attention_dropout (float, optional): If not None, separate the value of the dimension dropout
-            in FFN and of the attention dropout.
-        kv_repeat (int): If > 1, will repeat keys and queries multiple times (need to divide num_heads).
-            This will lead to faster decoding time on A100 or other GPUs with tensorcore.
-        device (torch.device, optional): Device on which to initialize.
-        dtype (torch.dtype, optional): dtype to use.
-        **kwargs: See `nn.TransformerEncoderLayer`.
-    """
     def __init__(self, d_model: int, num_heads: int, dim_feedforward: int = 2048, dropout: float = 0.1,
                  bias_ff: bool = True, bias_attn: bool = True, causal: bool = False,
                  past_context: tp.Optional[int] = None, custom: bool = False,
@@ -492,12 +448,12 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
                  qk_layer_norm: bool = False, qk_layer_norm_cross: bool = False,
                  cross_attention: bool = False, layer_scale: tp.Optional[float] = None,
                  rope: tp.Optional[RotaryEmbedding] = None, attention_dropout: tp.Optional[float] = None,
-                 kv_repeat: int = 1, norm: str = 'layer_norm', device=None, dtype=None, **kwargs):
+                 kv_repeat: int = 1, norm: str = 'layer_norm', use_adapter: bool = True,
+                 device=None, dtype=None, **kwargs):
         super().__init__(d_model, num_heads, dim_feedforward, dropout,
                          device=device, dtype=dtype, batch_first=True, **kwargs)
         factory_kwargs = {'device': device, 'dtype': dtype}
-        # Redefine self_attn to our streaming multi-head attention
-        attn_kwargs: tp.Dict[str, tp.Any] = {
+        attn_kwargs = {
             'embed_dim': d_model,
             'num_heads': num_heads,
             'dropout': dropout if attention_dropout is None else attention_dropout,
@@ -505,51 +461,46 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
             'custom': custom,
             'memory_efficient': memory_efficient,
             'attention_as_float32': attention_as_float32,
+            'use_adapter': use_adapter,
         }
-        self.self_attn: StreamingMultiheadAttention = StreamingMultiheadAttention(
+        self.self_attn = StreamingMultiheadAttention(
             causal=causal, past_context=past_context, rope=rope, qk_layer_norm=qk_layer_norm,
-            kv_repeat=kv_repeat, **attn_kwargs, **factory_kwargs)  # type: ignore
-        # Redefine feedforward layers to expose bias parameter
+            kv_repeat=kv_repeat, **attn_kwargs, **factory_kwargs)
         self.linear1 = nn.Linear(d_model, dim_feedforward, bias=bias_ff, **factory_kwargs)
         self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias_ff, **factory_kwargs)
 
-        self.layer_scale_1: nn.Module
-        self.layer_scale_2: nn.Module
-        if layer_scale is None:
-            self.layer_scale_1 = nn.Identity()
-            self.layer_scale_2 = nn.Identity()
-        else:
-            self.layer_scale_1 = LayerScale(d_model, layer_scale, **factory_kwargs)
-            self.layer_scale_2 = LayerScale(d_model, layer_scale, **factory_kwargs)
+        self.layer_scale_1 = nn.Identity() if layer_scale is None else LayerScale(d_model, layer_scale, **factory_kwargs)
+        self.layer_scale_2 = nn.Identity() if layer_scale is None else LayerScale(d_model, layer_scale, **factory_kwargs)
 
-        self.cross_attention: tp.Optional[nn.Module] = None
+        self.cross_attention = None
         if cross_attention:
             self.cross_attention = StreamingMultiheadAttention(
                 cross_attention=True, qk_layer_norm=qk_layer_norm_cross,
                 **attn_kwargs, **factory_kwargs)
-            # Norm and dropout
             self.dropout_cross = nn.Dropout(dropout)
-            # eps value matching that used in PyTorch reference implementation.
             self.norm_cross = nn.LayerNorm(d_model, eps=1e-5, **factory_kwargs)
-            self.layer_scale_cross: nn.Module
-            if layer_scale is None:
-                self.layer_scale_cross = nn.Identity()
-            else:
-                self.layer_scale_cross = LayerScale(d_model, layer_scale, **factory_kwargs)
-        self.norm1 = create_norm_fn(norm, d_model, **factory_kwargs)  # type: ignore
-        self.norm2 = create_norm_fn(norm, d_model, **factory_kwargs)  # type: ignore
+            self.layer_scale_cross = nn.Identity() if layer_scale is None else LayerScale(d_model, layer_scale, **factory_kwargs)
+        self.norm1 = create_norm_fn(norm, d_model, **factory_kwargs)
+        self.norm2 = create_norm_fn(norm, d_model, **factory_kwargs)
 
-    def _cross_attention_block(self, src: torch.Tensor,
-                               cross_attention_src: torch.Tensor) -> torch.Tensor:
+    def _sa_block(self, x: torch.Tensor, attn_mask: tp.Optional[torch.Tensor],
+                  key_padding_mask: tp.Optional[torch.Tensor], prompt_desc: tp.Optional[str] = None) -> torch.Tensor:
+        x = self.self_attn(x, x, x,
+                           attn_mask=attn_mask,
+                           key_padding_mask=key_padding_mask,
+                           need_weights=False,
+                           prompt_desc=prompt_desc)[0]
+        return self.dropout1(x)
+
+    def _cross_attention_block(self, src: torch.Tensor, cross_attention_src: torch.Tensor) -> torch.Tensor:
         assert self.cross_attention is not None
-        # queries are from src, keys and values from cross_attention_src.
-        x = self.cross_attention(
-            src, cross_attention_src, cross_attention_src, need_weights=False)[0]
-        return self.dropout_cross(x)  # type: ignore
+        x = self.cross_attention(src, cross_attention_src, cross_attention_src, need_weights=False)[0]
+        return self.dropout_cross(x)
 
-    def forward(self, src: torch.Tensor, src_mask: tp.Optional[torch.Tensor] = None,  # type: ignore
+    def forward(self, src: torch.Tensor, src_mask: tp.Optional[torch.Tensor] = None,
                 src_key_padding_mask: tp.Optional[torch.Tensor] = None,
-                cross_attention_src: tp.Optional[torch.Tensor] = None):
+                cross_attention_src: tp.Optional[torch.Tensor] = None,
+                prompt_desc: tp.Optional[str] = None):
         if self.cross_attention is None:
             assert cross_attention_src is None
         else:
@@ -557,60 +508,21 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
         x = src
         if self.norm_first:
             x = x + self.layer_scale_1(
-                self._sa_block(self.norm1(x), src_mask, src_key_padding_mask))
+                self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, prompt_desc=prompt_desc))
             if cross_attention_src is not None:
                 x = x + self.layer_scale_cross(
-                    self._cross_attention_block(
-                        self.norm_cross(x), cross_attention_src))
+                    self._cross_attention_block(self.norm_cross(x), cross_attention_src))
             x = x + self.layer_scale_2(self._ff_block(self.norm2(x)))
         else:
             x = self.norm1(x + self.layer_scale_1(
-                self._sa_block(x, src_mask, src_key_padding_mask)))
+                self._sa_block(x, src_mask, src_key_padding_mask, prompt_desc=prompt_desc)))
             if cross_attention_src is not None:
                 x = self.norm_cross(
-                    x + self.layer_scale_cross(
-                        self._cross_attention_block(src, cross_attention_src)))
+                    x + self.layer_scale_cross(self._cross_attention_block(src, cross_attention_src)))
             x = self.norm2(x + self.layer_scale_2(self._ff_block(x)))
         return x
 
-
 class StreamingTransformer(StreamingModule):
-    """Transformer with Streaming / Causal support.
-
-    Args:
-        d_model (int): Dimension of the data.
-        num_heads (int): Number of heads.
-        dim_feedforward (int): Intermediate dimension of FF module.
-        dropout (float): Dropout both for MHA and FF.
-        bias_ff (bool): Use bias for FF.
-        bias_attn (bool): Use bias for MHA.
-        causal (bool): Causal mask applied automatically.
-        past_context (int, optional): Receptive field for the causal mask, infinite if None.
-        custom (bool): Use custom MHA implementation, for testing / benchmarking.
-        memory_efficient (bool): Use xformers based memory efficient attention.
-        attention_as_float32 (bool): Perform the attention as float32
-            (especially important with memory_efficient as autocast won't do this automatically).
-        cross_attention (bool): If True, expect to get secondary input for cross-attention.
-        layer_scale (float, optional): If not None, LayerScale will be used
-            with the given value as initial scale.
-        positional_embedding (str): Positional embedding strategy (sin, rope, or sin_rope).
-        max_period (float): Maximum period of the time embedding.
-        positional_scale (float): Scale of positional embedding, set to 0 to deactivate.
-        xpos (bool): Apply xpos exponential decay to positional embedding (rope only).
-        lr (float, optional): learning rate override through the `make_optim_group` API.
-        weight_decay (float, optional): Weight_decay override through the `make_optim_group` API.
-        layer_class: (subclass of `StreamingTransformerLayer): class to use
-            to initialize the layers, allowing further customization outside of AudioCraft.
-        checkpointing (str): Checkpointing strategy to reduce memory usage.
-            No checkpointing if set to 'none'. Per layer checkpointing using PyTorch
-            if set to 'torch' (entire layer checkpointed, i.e. linears are evaluated twice,
-            minimal memory usage, but maximal runtime). Finally, `xformers_default` provide
-            a policy for opting-out some operations of the checkpointing like
-            linear layers and attention, providing a middle ground between speed and memory.
-        device (torch.device, optional): Device on which to initialize.
-        dtype (torch.dtype, optional): dtype to use.
-        **kwargs: See `nn.TransformerEncoderLayer`.
-    """
     def __init__(self, d_model: int, num_heads: int, num_layers: int, dim_feedforward: int = 2048,
                  dropout: float = 0.1, bias_ff: bool = True, bias_attn: bool = True,
                  causal: bool = False, past_context: tp.Optional[int] = None,
@@ -619,7 +531,7 @@ class StreamingTransformer(StreamingModule):
                  positional_embedding: str = 'sin', max_period: float = 10_000, positional_scale: float = 1.,
                  xpos: bool = False, lr: tp.Optional[float] = None, weight_decay: tp.Optional[float] = None,
                  layer_class: tp.Type[StreamingTransformerLayer] = StreamingTransformerLayer,
-                 checkpointing: str = 'none', device=None, dtype=None, **kwargs):
+                 checkpointing: str = 'none', use_adapter: bool = True, device=None, dtype=None, **kwargs):
         super().__init__()
         assert d_model % num_heads == 0
 
@@ -629,15 +541,17 @@ class StreamingTransformer(StreamingModule):
         self.weight_decay = weight_decay
         self.lr = lr
 
-        assert positional_embedding in ['sin', 'rope', 'sin_rope']
-        self.rope: tp.Optional[RotaryEmbedding] = None
+        assert positional_embedding in ['sin', 'rope', 'sin_rope', 'relative']
+        self.rope = None
+        self.rel_pos_enc = None
         if self.positional_embedding in ['rope', 'sin_rope']:
             assert _is_custom(custom, memory_efficient)
             self.rope = RotaryEmbedding(d_model // num_heads, max_period=max_period,
                                         xpos=xpos, scale=positional_scale, device=device)
+        elif self.positional_embedding == 'relative':
+            self.rel_pos_enc = RelativePositionalEncoding(d_model, max_len=max_period)
 
         self.checkpointing = checkpointing
-
         assert checkpointing in ['none', 'torch', 'xformers_default', 'xformers_mm']
         if self.checkpointing.startswith('xformers'):
             _verify_xformers_internal_compat()
@@ -651,13 +565,11 @@ class StreamingTransformer(StreamingModule):
                     causal=causal, past_context=past_context, custom=custom,
                     memory_efficient=memory_efficient, attention_as_float32=attention_as_float32,
                     cross_attention=cross_attention, layer_scale=layer_scale, rope=self.rope,
-                    device=device, dtype=dtype, **kwargs))
+                    use_adapter=use_adapter, device=device, dtype=dtype, **kwargs))
 
         if self.checkpointing != 'none':
             for layer in self.layers:
-                # see audiocraft/optim/fsdp.py, magic signal to indicate this requires fixing the
-                # backward hook inside of FSDP...
-                layer._magma_checkpointed = True  # type: ignore
+                layer._magma_checkpointed = True
 
     def _apply_layer(self, layer, *args, **kwargs):
         method = self.checkpointing
@@ -668,8 +580,6 @@ class StreamingTransformer(StreamingModule):
         elif method.startswith('xformers'):
             from xformers.checkpoint_fairinternal import checkpoint, _get_default_policy
             if method == 'xformers_default':
-                # those operations will be saved, and not recomputed.
-                # According to Francisco we can get smarter policies but this is a good start.
                 allow_list = [
                     "xformers.efficient_attention_forward_cutlass.default",
                     "xformers_flash.flash_fwd.default",
@@ -677,12 +587,7 @@ class StreamingTransformer(StreamingModule):
                     "aten.mm.default",
                 ]
             elif method == 'xformers_mm':
-                # those operations will be saved, and not recomputed.
-                # According to Francisco we can get smarter policies but this is a good start.
-                allow_list = [
-                    "aten.addmm.default",
-                    "aten.mm.default",
-                ]
+                allow_list = ["aten.addmm.default", "aten.mm.default"]
             else:
                 raise ValueError(f"xformers checkpointing xformers policy {method} is not known.")
             policy_fn = _get_default_policy(allow_list)
@@ -690,7 +595,7 @@ class StreamingTransformer(StreamingModule):
         else:
             raise ValueError(f"Checkpointing method {method} is unknown.")
 
-    def forward(self, x: torch.Tensor, *args, **kwargs):
+    def forward(self, x: torch.Tensor, prompt_desc: tp.Optional[str] = None, *args, **kwargs):
         B, T, C = x.shape
 
         if 'offsets' in self._streaming_state:
@@ -698,14 +603,16 @@ class StreamingTransformer(StreamingModule):
         else:
             offsets = torch.zeros(B, dtype=torch.long, device=x.device)
 
-        if self.positional_embedding in ['sin', 'sin_rope']:
+        if self.positional_embedding == 'relative':
+            x = self.rel_pos_enc(x)
+        elif self.positional_embedding in ['sin', 'sin_rope']:
             positions = torch.arange(T, device=x.device).view(1, -1, 1)
             positions = positions + offsets.view(-1, 1, 1)
             pos_emb = create_sin_embedding(positions, C, max_period=self.max_period, dtype=x.dtype)
             x = x + self.positional_scale * pos_emb
 
         for layer in self.layers:
-            x = self._apply_layer(layer, x, *args, **kwargs)
+            x = self._apply_layer(layer, x, prompt_desc=prompt_desc, *args, **kwargs)
 
         if self._is_streaming:
             self._streaming_state['offsets'] = offsets + T
@@ -720,36 +627,17 @@ class StreamingTransformer(StreamingModule):
             group["weight_decay"] = self.weight_decay
         return group
 
-
-# special attention related function
-
 def _verify_xformers_memory_efficient_compat():
     try:
-        from xformers.ops import memory_efficient_attention, LowerTriangularMask  # noqa
+        from xformers.ops import memory_efficient_attention, LowerTriangularMask
     except ImportError:
-        raise ImportError(
-            "xformers is not installed. Please install it and try again.\n"
-            "To install on AWS and Azure, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='8.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n"
-            "To install on FAIR Cluster, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='6.0;7.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n")
-
+        raise ImportError("xformers not installed.")
 
 def _verify_xformers_internal_compat():
     try:
-        from xformers.checkpoint_fairinternal import checkpoint, _get_default_policy  # noqa
+        from xformers.checkpoint_fairinternal import checkpoint, _get_default_policy
     except ImportError:
-        raise ImportError(
-            "Francisco's fairinternal xformers is not installed. Please install it and try again.\n"
-            "To install on AWS and Azure, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='8.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n"
-            "To install on FAIR Cluster, run \n"
-            "FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST='6.0;7.0'\\\n"
-            "pip install -U git+https://git@github.com/fairinternal/xformers.git#egg=xformers\n")
-
+        raise ImportError("Francisco's fairinternal xformers not installed.")
 
 def _is_custom(custom: bool, memory_efficient: bool):
     return custom or memory_efficient
