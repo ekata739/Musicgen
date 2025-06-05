@@ -22,24 +22,24 @@ def _get_attention_time_dimension(memory_efficient: bool) -> int:
     if _efficient_attention_backend == 'torch' and memory_efficient:
         return 2
     else:
-        return 1 #Returns the time axis index depending on the backend layout.
+        return 1
 
 def _is_profiled() -> bool:
     try:
         from xformers.profiler import profiler
-    except ImportError: #returns whether xformers profiler is actively running
+    except ImportError:
         return False
     return profiler._Profiler._CURRENT_PROFILER is not None
 
 def create_norm_fn(norm_type: str, dim: int, **kwargs) -> nn.Module:
-    if norm_type == 'layer_norm':#Returns the specified normalization module
+    if norm_type == 'layer_norm':
         return nn.LayerNorm(dim, eps=1e-5, **kwargs)
     else:
         raise ValueError(f"Unknown norm type: {norm_type}")
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
                          dtype: torch.dtype = torch.float32) -> torch.Tensor:
-    assert dim % 2 == 0 #Creates sinusoidal positional embeddings (like those used in the original Transformer). Each position is mapped to a unique sine/cosine value.
+    assert dim % 2 == 0
     half_dim = dim // 2
     positions = positions.to(dtype)
     adim = torch.arange(half_dim, device=positions.device, dtype=dtype).view(1, 1, -1)
@@ -48,7 +48,7 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
 def expand_repeated_kv(x: torch.Tensor, n_rep: int, memory_efficient: bool) -> torch.Tensor:
-    if n_rep == 1: #Handles key-value duplication for multi-query attention where kv_repeat > 1.
+    if n_rep == 1:
         return x
     if _efficient_attention_backend == 'torch' and memory_efficient:
         bs, n_kv_heads, slen, head_dim = x.shape
@@ -68,7 +68,7 @@ def expand_repeated_kv(x: torch.Tensor, n_rep: int, memory_efficient: bool) -> t
 class LayerScale(nn.Module):
     def __init__(self, channels: int, init: float = 1e-4, channel_last: bool = True,
                  device=None, dtype=None):
-        super().__init__() #Applies a learned scaling factor to the residual connection. Helps stabilize training in deep networks.
+        super().__init__()
         self.channel_last = channel_last
         self.scale = nn.Parameter(
             torch.full((channels,), init, requires_grad=True, device=device, dtype=dtype))
@@ -81,60 +81,50 @@ class LayerScale(nn.Module):
 
 class RelativePositionalEncoding(nn.Module):
     def __init__(self, embed_dim: int, max_len: int = 512):
-        super().__init__() #Instead of fixed sin/cos positions, this learns an embedding for relative positions between tokens. Helpful in music or time-series tasks where relative position matters more than absolute.
+        super().__init__()
         self.embed_dim = embed_dim
         self.max_len = max_len
-        self.rel_pos_emb = nn.Embedding(2 * max_len - 1, embed_dim) #t maps relative distances between tokens to embedding vectors.
+        self.rel_pos_emb = nn.Embedding(2 * max_len - 1, embed_dim)
         coords = torch.arange(max_len)
-        rel_coords = coords[:, None] - coords[None, :] #This creates a matrix of relative distances between every pair of positions.
-        rel_coords += max_len - 1 #Since relative distances can be negative, we shift them to become valid positive indices into
+        rel_coords = coords[:, None] - coords[None, :]
+        rel_coords += max_len - 1
         self.register_buffer('rel_coords', rel_coords)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape #Applies the relative position bias to every token in the sequence.
+        batch_size, seq_len, _ = x.shape
         rel_pos = self.rel_pos_emb(self.rel_coords[:seq_len, :seq_len])
-        x = x + rel_pos.unsqueeze(0) #adds batch dimension for broadcasting.
+        x = x + rel_pos.unsqueeze(0)
         return x
 
 class MultiScaleHeterogeneousAdapter(nn.Module):
-    """Multi-Scale Temporal Adapter with Single Scale, no tasks."""
     def __init__(self, embed_dim: int, num_heads: int, scale: int,
                  device=None, dtype=None):
         super().__init__()
-        self.scale = scale #How long the learned "prompt" should be—controls temporal range.
-        self.head_dim = embed_dim // num_heads #Dimension per attention head.
-
-        # Initialize prompt with sinusoidal pattern for classical melodies
+        self.scale = scale
+        self.head_dim = embed_dim // num_heads
         self.prompt = nn.Parameter(
             torch.sin(torch.linspace(0, 2 * torch.pi, scale)).unsqueeze(-1).repeat(1, self.head_dim) * 0.1
-        ) #Creates a [scale, head_dim] matrix of sinusoidal signals (like musical waveforms). Sinusoidal patterns can capture natural periodic structure
-
-
-        # These act as learned memory templates, initialized from a sinusoidal base.
+        )
         self.gate = nn.Parameter(
             torch.ones(1, device=device, dtype=dtype) * 0.5,
             requires_grad=True
-        ) #A scalar gate (sigmoid(self.gate)) controls how much of the adapter's output influences the final result.
+        )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        batch_size, seq_len, num_heads, head_dim = q.shape #Input: Q/K/V from main attention head.
-        adapter_output = torch.zeros_like(q) #Output: same shape as q.
-
-
-        scale_prompt = self.prompt #Match the length of the prompt to current sequence length.
+        batch_size, seq_len, num_heads, head_dim = q.shape
+        adapter_output = torch.zeros_like(q)
+        scale_prompt = self.prompt
         if scale_prompt.size(0) > seq_len:
             scale_prompt = scale_prompt[:seq_len]
         elif scale_prompt.size(0) < seq_len:
             scale_prompt = F.pad(scale_prompt, (0, 0, 0, seq_len - scale_prompt.size(0)))
-        scale_prompt_expanded = scale_prompt.unsqueeze(0).unsqueeze(2).expand(batch_size, -1, num_heads, -1) #Reshape prompt to shape: (batch, seq_len, num_heads, head_dim) so it can be attended to.
+        scale_prompt_expanded = scale_prompt.unsqueeze(0).unsqueeze(2).expand(batch_size, -1, num_heads, -1)
         attn = F.scaled_dot_product_attention(
             q, scale_prompt_expanded, scale_prompt_expanded, dropout_p=0.0
-        ) #Perform attention over the prompt, not the original key/value inputs.
-#This returns context from the fixed sinusoidal memory.
+        )
         gate = torch.sigmoid(self.gate)
         adapter_output += gate * attn
-
-        return adapter_output #Modulate output via gate, so the model can learn how much to use this adapter.
+        return adapter_output
 
 class StreamingMultiheadAttention(StreamingModule):
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, bias: bool = True,
@@ -147,7 +137,6 @@ class StreamingMultiheadAttention(StreamingModule):
         factory_kwargs = {'device': device, 'dtype': dtype}
         if past_context is not None:
             assert causal
-
         self.embed_dim = embed_dim
         self.causal = causal
         self.past_context = past_context
@@ -162,11 +151,21 @@ class StreamingMultiheadAttention(StreamingModule):
         if cross_attention:
             assert not causal
             assert rope is None
-
         if memory_efficient:
             _verify_xformers_memory_efficient_compat()
-
         self.custom = _is_custom(custom, memory_efficient)
+
+        # Tonal Harmony Module
+        self.key_vocab_size = 24  # 12 major, 12 minor keys
+        self.key_embedding = nn.Embedding(self.key_vocab_size, embed_dim, **factory_kwargs)
+        self.chord_vocab_size = 24  # 12 major, 12 minor chords
+        self.chord_transition_bias = nn.Parameter(
+            torch.zeros(self.chord_vocab_size, device=device, dtype=dtype), requires_grad=True
+        )
+        self.harmony_scale = nn.Parameter(torch.tensor(0.1, device=device, dtype=dtype))
+        # Learnable key projection from prompt embedding
+        self.prompt_to_key = nn.Linear(embed_dim, self.key_vocab_size, **factory_kwargs)
+
         if self.custom:
             out_dim = embed_dim
             assert num_heads % kv_repeat == 0
@@ -199,47 +198,21 @@ class StreamingMultiheadAttention(StreamingModule):
         self.use_adapter = use_adapter
         self.adapters = nn.ModuleList()
         if self.use_adapter:
-            # Adapter 1: Micro-patterns (short scale)
             self.adapters.append(MultiScaleHeterogeneousAdapter(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                scale=150,
-                device=device,
-                dtype=dtype
+                embed_dim=embed_dim, num_heads=num_heads, scale=150, device=device, dtype=dtype
             ))
-            # Adapter 2: Melody (short-medium scale)
             self.adapters.append(MultiScaleHeterogeneousAdapter(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                scale=400,
-                device=device,
-                dtype=dtype
+                embed_dim=embed_dim, num_heads=num_heads, scale=400, device=device, dtype=dtype
             ))
-            # Adapter 3: Harmony (medium scale)
             self.adapters.append(MultiScaleHeterogeneousAdapter(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                scale=600,
-                device=device,
-                dtype=dtype
+                embed_dim=embed_dim, num_heads=num_heads, scale=600, device=device, dtype=dtype
             ))
-            # Adapter 4: Sectional structure (long scale)
             self.adapters.append(MultiScaleHeterogeneousAdapter(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                scale=1000,
-                device=device,
-                dtype=dtype
+                embed_dim=embed_dim, num_heads=num_heads, scale=1000, device=device, dtype=dtype
             ))
-            # Adapter 5: Full structure (longest scale)
             self.adapters.append(MultiScaleHeterogeneousAdapter(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                scale=1500,
-                device=device,
-                dtype=dtype
+                embed_dim=embed_dim, num_heads=num_heads, scale=1500, device=device, dtype=dtype
             ))
-            # Weights for combining adapter outputs, prioritizing melody
             self.adapter_weights = nn.Parameter(
                 torch.tensor([0.20, 0.20, 0.20, 0.20, 0.20], device=device, dtype=dtype),
                 requires_grad=True
@@ -267,7 +240,6 @@ class StreamingMultiheadAttention(StreamingModule):
             past_steps = self._streaming_state['past_keys'].shape[time_dim]
         else:
             past_steps = 0
-
         queries_pos = torch.arange(past_steps, current_steps + past_steps, device=device).view(-1, 1)
         keys_pos = torch.arange(past_steps + current_steps, device=device).view(1, -1)
         delta = queries_pos - keys_pos
@@ -294,8 +266,6 @@ class StreamingMultiheadAttention(StreamingModule):
         else:
             nk = k
             nv = v
-
-        assert nk.shape[time_dim] == nv.shape[time_dim]
         offset = 0
         if self.past_context is not None:
             offset = max(0, nk.shape[time_dim] - self.past_context)
@@ -323,23 +293,45 @@ class StreamingMultiheadAttention(StreamingModule):
         streaming_offset = past_context_offset + past_keys_offset
         return self.rope.rotate_qk(query, key, start=streaming_offset, time_dim=time_dim)
 
+    def _infer_key_id(self, prompt_emb: torch.Tensor) -> torch.Tensor:
+        # Project prompt embedding to key ID (e.g., 0 for C major, 1 for C minor, etc.)
+        key_logits = self.prompt_to_key(prompt_emb.mean(dim=1))  # [B, key_vocab_size]
+        key_id = key_logits.argmax(dim=-1)  # [B]
+        return key_id.unsqueeze(1).expand(-1, prompt_emb.shape[1])  # [B, T]
+
+    def _get_harmony_bias(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        # Simulate chord progression bias (e.g., I-IV-V-I) without explicit chord IDs
+        chord_bias = torch.sigmoid(self.chord_transition_bias).unsqueeze(0).unsqueeze(-1)  # [1, chord_vocab_size, 1]
+        chord_bias = chord_bias.expand(1, seq_len, -1).mean(dim=2).unsqueeze(1).unsqueeze(-1)  # [1, 1, T, 1]
+        return chord_bias
+
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 key_padding_mask=None, need_weights=False, attn_mask=None,
-                average_attn_weights=True, is_causal=False, prompt_desc: tp.Optional[str] = None):
+                average_attn_weights=True, is_causal=False, prompt_emb: tp.Optional[torch.Tensor] = None):
         assert not is_causal
         time_dim = _get_attention_time_dimension(self.memory_efficient)
         layout = "b h t d" if time_dim == 2 else "b t h d"
         dtype = query.dtype
         if self._is_streaming:
             assert self.causal or self.cross_attention
-
         custom_attn_mask = attn_mask is not None
-
         if self.causal:
             assert attn_mask is None
             assert query.shape[1] == key.shape[1]
             assert value.shape[1] == key.shape[1]
             attn_mask = self._get_mask(query.shape[1], query.device, query.dtype)
+
+        # Tonal Harmony Module: Infer key from prompt embedding and apply harmony bias
+        if prompt_emb is not None:
+            key_id = self._infer_key_id(prompt_emb)
+            key_emb = self.key_embedding(key_id)  # [B, T, embed_dim]
+            query = query + self.harmony_scale * key_emb
+            key = key + self.harmony_scale * key_emb
+            harmony_bias = self._get_harmony_bias(query.shape[1], query.device, query.dtype)
+            if attn_mask is not None:
+                attn_mask = attn_mask + harmony_bias
+            else:
+                attn_mask = harmony_bias
 
         if self.custom:
             assert need_weights is False
@@ -376,7 +368,6 @@ class StreamingMultiheadAttention(StreamingModule):
                     q = rearrange(q, f"b t (h d) -> {layout}", h=self.num_heads)
                     k = rearrange(k, f"b t (h d) -> {layout}", h=kv_heads)
                     v = rearrange(v, f"b t (h d) -> {layout}", h=kv_heads)
-
                 if self.qk_layer_norm:
                     assert self.kv_repeat == 1
                     q, k = [rearrange(x, f"{layout} -> b t (h d)") for x in [q, k]]
@@ -389,7 +380,6 @@ class StreamingMultiheadAttention(StreamingModule):
                 if self.kv_repeat > 1:
                     k = expand_repeated_kv(k, self.kv_repeat, self.memory_efficient)
                     v = expand_repeated_kv(v, self.kv_repeat, self.memory_efficient)
-
             if self.attention_as_float32:
                 q, k, v = [x.float() for x in [q, k, v]]
             if self.memory_efficient:
@@ -398,7 +388,6 @@ class StreamingMultiheadAttention(StreamingModule):
                     attn_mask = attn_mask.to(q.dtype)
                     attn_mask = attn_mask.repeat((q.shape[0], 1, 1, 1))
                     attn_mask = attn_mask[..., :seq_len, :seq_len]
-
                 p = self.dropout if self.training else 0
                 if _efficient_attention_backend == 'torch':
                     x = torch.nn.functional.scaled_dot_product_attention(
@@ -419,13 +408,11 @@ class StreamingMultiheadAttention(StreamingModule):
                 w = torch.softmax(pre_w, dim=-1)
                 w = F.dropout(w, self.dropout, training=self.training).to(v)
                 x = torch.einsum(f"b h t k, {key_layout} -> {layout}", w, v)
-
             if self.use_adapter and self.adapters:
                 adapter_outputs = [adapter(q, k, v) for adapter in self.adapters]
                 weights = F.softmax(self.adapter_weights, dim=0)
                 adapter_output = sum(w * out for w, out in zip(weights, adapter_outputs))
                 x = x + adapter_output
-
             x = x.to(dtype)
             x = rearrange(x, f"{layout} -> b t (h d)", h=self.num_heads)
             x = self.out_proj(x)
@@ -437,7 +424,6 @@ class StreamingMultiheadAttention(StreamingModule):
                 query, key, value, key_padding_mask,
                 need_weights, attn_mask, average_attn_weights)
             x = x.to(dtype)
-
         return x, None
 
 class StreamingTransformerLayer(nn.TransformerEncoderLayer):
@@ -468,10 +454,8 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
             kv_repeat=kv_repeat, **attn_kwargs, **factory_kwargs)
         self.linear1 = nn.Linear(d_model, dim_feedforward, bias=bias_ff, **factory_kwargs)
         self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias_ff, **factory_kwargs)
-
         self.layer_scale_1 = nn.Identity() if layer_scale is None else LayerScale(d_model, layer_scale, **factory_kwargs)
         self.layer_scale_2 = nn.Identity() if layer_scale is None else LayerScale(d_model, layer_scale, **factory_kwargs)
-
         self.cross_attention = None
         if cross_attention:
             self.cross_attention = StreamingMultiheadAttention(
@@ -484,23 +468,25 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
         self.norm2 = create_norm_fn(norm, d_model, **factory_kwargs)
 
     def _sa_block(self, x: torch.Tensor, attn_mask: tp.Optional[torch.Tensor],
-                  key_padding_mask: tp.Optional[torch.Tensor], prompt_desc: tp.Optional[str] = None) -> torch.Tensor:
+                  key_padding_mask: tp.Optional[torch.Tensor], prompt_emb: tp.Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.self_attn(x, x, x,
                            attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
                            need_weights=False,
-                           prompt_desc=prompt_desc)[0]
+                           prompt_emb=prompt_emb)[0]
         return self.dropout1(x)
 
-    def _cross_attention_block(self, src: torch.Tensor, cross_attention_src: torch.Tensor) -> torch.Tensor:
+    def _cross_attention_block(self, src: torch.Tensor, cross_attention_src: torch.Tensor,
+                              prompt_emb: tp.Optional[torch.Tensor] = None) -> torch.Tensor:
         assert self.cross_attention is not None
-        x = self.cross_attention(src, cross_attention_src, cross_attention_src, need_weights=False)[0]
+        x = self.cross_attention(src, cross_attention_src, cross_attention_src,
+                                 need_weights=False, prompt_emb=prompt_emb)[0]
         return self.dropout_cross(x)
 
     def forward(self, src: torch.Tensor, src_mask: tp.Optional[torch.Tensor] = None,
                 src_key_padding_mask: tp.Optional[torch.Tensor] = None,
                 cross_attention_src: tp.Optional[torch.Tensor] = None,
-                prompt_desc: tp.Optional[str] = None):
+                prompt_emb: tp.Optional[torch.Tensor] = None):
         if self.cross_attention is None:
             assert cross_attention_src is None
         else:
@@ -508,17 +494,17 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
         x = src
         if self.norm_first:
             x = x + self.layer_scale_1(
-                self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, prompt_desc=prompt_desc))
+                self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, prompt_emb=prompt_emb))
             if cross_attention_src is not None:
                 x = x + self.layer_scale_cross(
-                    self._cross_attention_block(self.norm_cross(x), cross_attention_src))
+                    self._cross_attention_block(self.norm_cross(x), cross_attention_src, prompt_emb=prompt_emb))
             x = x + self.layer_scale_2(self._ff_block(self.norm2(x)))
         else:
             x = self.norm1(x + self.layer_scale_1(
-                self._sa_block(x, src_mask, src_key_padding_mask, prompt_desc=prompt_desc)))
+                self._sa_block(x, src_mask, src_key_padding_mask, prompt_emb=prompt_emb)))
             if cross_attention_src is not None:
                 x = self.norm_cross(
-                    x + self.layer_scale_cross(self._cross_attention_block(src, cross_attention_src)))
+                    x + self.layer_scale_cross(self._cross_attention_block(src, cross_attention_src, prompt_emb=prompt_emb)))
             x = self.norm2(x + self.layer_scale_2(self._ff_block(x)))
         return x
 
@@ -534,13 +520,11 @@ class StreamingTransformer(StreamingModule):
                  checkpointing: str = 'none', use_adapter: bool = True, device=None, dtype=None, **kwargs):
         super().__init__()
         assert d_model % num_heads == 0
-
         self.positional_embedding = positional_embedding
         self.max_period = max_period
         self.positional_scale = positional_scale
         self.weight_decay = weight_decay
         self.lr = lr
-
         assert positional_embedding in ['sin', 'rope', 'sin_rope', 'relative']
         self.rope = None
         self.rel_pos_enc = None
@@ -550,12 +534,10 @@ class StreamingTransformer(StreamingModule):
                                         xpos=xpos, scale=positional_scale, device=device)
         elif self.positional_embedding == 'relative':
             self.rel_pos_enc = RelativePositionalEncoding(d_model, max_len=max_period)
-
         self.checkpointing = checkpointing
         assert checkpointing in ['none', 'torch', 'xformers_default', 'xformers_mm']
         if self.checkpointing.startswith('xformers'):
             _verify_xformers_internal_compat()
-
         self.layers = nn.ModuleList()
         for idx in range(num_layers):
             self.layers.append(
@@ -566,7 +548,6 @@ class StreamingTransformer(StreamingModule):
                     memory_efficient=memory_efficient, attention_as_float32=attention_as_float32,
                     cross_attention=cross_attention, layer_scale=layer_scale, rope=self.rope,
                     use_adapter=use_adapter, device=device, dtype=dtype, **kwargs))
-
         if self.checkpointing != 'none':
             for layer in self.layers:
                 layer._magma_checkpointed = True
@@ -595,14 +576,12 @@ class StreamingTransformer(StreamingModule):
         else:
             raise ValueError(f"Checkpointing method {method} is unknown.")
 
-    def forward(self, x: torch.Tensor, prompt_desc: tp.Optional[str] = None, *args, **kwargs):
+    def forward(self, x: torch.Tensor, prompt_emb: tp.Optional[torch.Tensor] = None, *args, **kwargs):
         B, T, C = x.shape
-
         if 'offsets' in self._streaming_state:
             offsets = self._streaming_state['offsets']
         else:
             offsets = torch.zeros(B, dtype=torch.long, device=x.device)
-
         if self.positional_embedding == 'relative':
             x = self.rel_pos_enc(x)
         elif self.positional_embedding in ['sin', 'sin_rope']:
@@ -610,13 +589,10 @@ class StreamingTransformer(StreamingModule):
             positions = positions + offsets.view(-1, 1, 1)
             pos_emb = create_sin_embedding(positions, C, max_period=self.max_period, dtype=x.dtype)
             x = x + self.positional_scale * pos_emb
-
         for layer in self.layers:
-            x = self._apply_layer(layer, x, prompt_desc=prompt_desc, *args, **kwargs)
-
+            x = self._apply_layer(layer, x, prompt_emb=prompt_emb, *args, **kwargs)
         if self._is_streaming:
             self._streaming_state['offsets'] = offsets + T
-
         return x
 
     def make_optim_group(self):
